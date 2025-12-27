@@ -1,6 +1,8 @@
-opencv-python
-tensorflow
-mediapipe
-numpy
-streamlit
-pygame
+opencv-python==4.10.0.84
+tensorflow==2.16.1
+mediapipe==0.10.14
+protobuf==4.25.3
+numpy==1.26.4
+streamlit==1.39.0
+pygame==2.6.0
+matplotlib==3.9.2
