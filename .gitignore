@@ -1,0 +1,6 @@
+venv/
+mrl_dataset_raw/Close-Eyes
+mrl_dataset_raw/Open-Eyes
+data/
+__pycache__/
+.DS_Store
