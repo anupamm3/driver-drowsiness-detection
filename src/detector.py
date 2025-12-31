@@ -3,223 +3,201 @@ import numpy as np
 import mediapipe as mp
 from tensorflow.keras.models import load_model
 
-
 class DrowsinessDetector:
     """
-    DrowsinessDetector class for real-time drowsiness detection.
-    Uses MediaPipe Face Mesh for facial landmark detection and a CNN for eye state classification.
+    Drowsiness detection using MediaPipe face mesh and trained CNN.
     """
     
     def __init__(self, model_path):
-        """
-        Initialize the DrowsinessDetector.
+        # Load CNN model
+        try:
+            self.model = load_model(model_path)
+            print(f"✅ CNN Model loaded successfully from: {model_path}")  # ADD THIS
+        except Exception as e:
+            raise Exception(f"❌ Error loading CNN model: {e}")
         
-        Args:
-            model_path (str): Path to the trained CNN model (.h5 file)
-        """
-        # Load the trained CNN model for eye state classification
-        self.model = load_model(model_path)
+        # Initialize MediaPipe Face Mesh
+        try:
+            self.mp_face_mesh = mp.solutions.face_mesh
+            self.face_mesh = self.mp_face_mesh.FaceMesh(
+                static_image_mode=False,
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+            print("✅ MediaPipe Face Mesh initialized successfully")  # ADD THIS
+        except Exception as e:
+            raise Exception(f"❌ Error initializing MediaPipe: {e}")
         
-        # Initialize MediaPipe Face Mesh with refined landmarks for better eye detection
-        self.mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-            refine_landmarks=True,
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5
-        )
+        # Eye landmark indices (MediaPipe uses 468 points)
+        self.LEFT_EYE = [33, 160, 158, 133, 153, 144]  # 6 key points (similar to dlib)
+        self.RIGHT_EYE = [362, 385, 387, 263, 373, 380]
         
-        # Counter for consecutive closed eye frames (drowsiness indicator)
+        # Alternative: Use all eye points for better accuracy
+        # self.LEFT_EYE = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+        # self.RIGHT_EYE = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+        
+        # Drowsiness tracking
         self.CLOSED_FRAMES = 0
-        
-        # Counter for consecutive yawn frames
-        self.YAWN_FRAMES = 0
-
+        self.DROWSINESS_THRESHOLD = 15
+        self.EYE_CLOSED_THRESHOLD = 0.5
+    
     def process_frame(self, frame):
-        """
-        Process a single video frame to detect drowsiness and yawning.
-        
-        Args:
-            frame: Input video frame (BGR format from OpenCV)
-            
-        Returns:
-            dict: Dictionary containing detection results with keys:
-                - 'left_eye': State of left eye ('Open', 'Closed', or 'No Face Detected')
-                - 'score': Drowsiness score (number of consecutive closed frames)
-                - 'yawn': Boolean indicating if yawning is detected
-                - 'annotated_frame': The input frame (can be modified for visualization)
-        """
-        # Convert frame from BGR (OpenCV format) to RGB (MediaPipe format)
+        # Convert to RGB (MediaPipe requires RGB)
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Process the frame with MediaPipe Face Mesh
-        results = self.mp_face_mesh.process(rgb_frame)
-
-        # Check if any face was detected in the frame
-        if results.multi_face_landmarks:
-            # Get the first detected face's landmarks
-            landmarks = results.multi_face_landmarks[0]
-
-            # Extract eye region landmarks for both eyes
-            left_eye = self.extract_eye(landmarks, left=True)
-            right_eye = self.extract_eye(landmarks, left=False)
-
-            # Process both eyes through the CNN to determine their state
-            left_eye_state = self.process_eye(left_eye, frame)
-            right_eye_state = self.process_eye(right_eye, frame)
-
-            # Drowsiness detection: Both eyes must be closed
-            if left_eye_state == 'Closed' and right_eye_state == 'Closed':
-                self.CLOSED_FRAMES += 1
-            else:
-                # Reset counter if eyes are open
-                self.CLOSED_FRAMES = 0
-
-            # Yawn detection using Mouth Aspect Ratio (MAR)
-            mouth_aspect_ratio = self.calculate_mar(landmarks)
-            if mouth_aspect_ratio > 0.5:
-                self.YAWN_FRAMES += 1
-            else:
-                self.YAWN_FRAMES = 0
-
-            # Return detection results
+        # Process with MediaPipe
+        results = self.face_mesh.process(rgb_frame)
+        
+        # No face detected
+        if not results.multi_face_landmarks:
+            self.CLOSED_FRAMES = max(0, self.CLOSED_FRAMES - 1)
             return {
-                'left_eye': left_eye_state,
+                'drowsy': False,
                 'score': self.CLOSED_FRAMES,
-                'yawn': self.YAWN_FRAMES > 0,
-                'annotated_frame': frame
+                'left_eye_state': 'No Face',
+                'right_eye_state': 'No Face',
+                'face_detected': False,
+                'annotated_frame': self._draw_no_face_warning(frame)
             }
+        
+        # Get first face landmarks
+        face_landmarks = results.multi_face_landmarks[0]
+        h, w = frame.shape[:2]
+        
+        # Extract eye landmarks
+        left_eye = self._get_landmarks(face_landmarks, self.LEFT_EYE, w, h)
+        right_eye = self._get_landmarks(face_landmarks, self.RIGHT_EYE, w, h)
+        
+        # Predict eye states
+        left_eye_state, left_confidence = self._predict_eye_state(frame, left_eye)
+        right_eye_state, right_confidence = self._predict_eye_state(frame, right_eye)
+        
+        # Update closed frames counter
+        if left_eye_state == 'Closed' and right_eye_state == 'Closed':
+            self.CLOSED_FRAMES += 1
         else:
-            # No face detected - reset all counters
-            return {
-                'left_eye': 'No Face Detected',
-                'score': 0,
-                'yawn': False,
-                'annotated_frame': frame
-            }
-
-    def extract_eye(self, landmarks, left=True):
-        """
-        Extract eye landmark coordinates from the face mesh.
+            self.CLOSED_FRAMES = max(0, self.CLOSED_FRAMES - 1)
         
-        Args:
-            landmarks: MediaPipe face mesh landmarks
-            left (bool): True for left eye, False for right eye
-            
-        Returns:
-            list: List of (x, y) tuples representing eye landmark coordinates
-        """
-        # MediaPipe Face Mesh landmark indices for eyes
-        # Left eye indices: Key points around the left eye contour
-        # Right eye indices: Key points around the right eye contour
-        if left:
-            indices = [33, 133, 153, 144, 163, 7]
-        else:
-            indices = [362, 263, 283, 274, 293, 1]
-
-        # Extract normalized (x, y) coordinates for each landmark
-        eye_landmarks = [(landmarks.landmark[i].x, landmarks.landmark[i].y) for i in indices]
-        return eye_landmarks
-
-    def process_eye(self, eye_landmarks, frame):
-        """
-        Process eye landmarks through the CNN to classify eye state.
+        is_drowsy = self.CLOSED_FRAMES >= self.DROWSINESS_THRESHOLD
         
-        Args:
-            eye_landmarks: List of eye landmark coordinates
-            frame: Original video frame for reference
-            
-        Returns:
-            str: 'Closed' if eye is closed (prediction > 0.9), else 'Open'
-        """
-        # Prepare the eye image for CNN input
-        eye_image = self.prepare_eye_image(eye_landmarks, frame)
+        # Annotate frame
+        annotated_frame = self._annotate_frame(
+            frame, left_eye, right_eye,
+            left_eye_state, right_eye_state,
+            left_confidence, right_confidence,
+            is_drowsy
+        )
         
-        # Run prediction through the trained CNN model
+        return {
+            'drowsy': is_drowsy,
+            'score': self.CLOSED_FRAMES,
+            'left_eye_state': left_eye_state,
+            'right_eye_state': right_eye_state,
+            'left_confidence': left_confidence,
+            'right_confidence': right_confidence,
+            'face_detected': True,
+            'annotated_frame': annotated_frame
+        }
+    
+    def _get_landmarks(self, face_landmarks, indices, width, height):
+        """Convert MediaPipe landmarks to pixel coordinates."""
+        landmarks = []
+        for idx in indices:
+            landmark = face_landmarks.landmark[idx]
+            x = int(landmark.x * width)
+            y = int(landmark.y * height)
+            landmarks.append([x, y])
+        return np.array(landmarks, dtype=np.int32)
+    
+    def _predict_eye_state(self, frame, eye_landmarks):
+        """Predict eye state using CNN (same as before)."""
+        eye_image = self._extract_eye_region(frame, eye_landmarks)
+        
+        if eye_image is None:
+            return 'Unknown', 0.0
+        
         prediction = self.model.predict(eye_image, verbose=0)
+        closed_confidence = prediction[0][0]
+        open_confidence = prediction[0][1]
         
-        # Classification: Index 0 = Open, Index 1 = Closed
-        # Threshold: 0.9 confidence required to classify as "Closed"
-        return 'Closed' if prediction[0][1] > 0.9 else 'Open'
-
-    def prepare_eye_image(self, eye_landmarks, frame):
-        """
-        Prepare eye region image for CNN input.
-        Crops, converts to grayscale, and resizes to (64, 64).
+        if open_confidence > self.EYE_CLOSED_THRESHOLD:
+            return 'Open', open_confidence
+        else:
+            return 'Closed', closed_confidence
+    
+    def _extract_eye_region(self, frame, eye_landmarks):
+        """Extract eye region (same as before)."""
+        x_coords = eye_landmarks[:, 0]
+        y_coords = eye_landmarks[:, 1]
         
-        Args:
-            eye_landmarks: List of eye landmark coordinates (normalized)
-            frame: Original video frame
-            
-        Returns:
-            numpy.ndarray: Preprocessed eye image ready for CNN (shape: 1, 64, 64, 1)
-        """
-        h, w, _ = frame.shape
+        x_min, x_max = int(x_coords.min()), int(x_coords.max())
+        y_min, y_max = int(y_coords.min()), int(y_coords.max())
         
-        # Convert normalized coordinates to pixel coordinates
-        points = np.array([(int(x * w), int(y * h)) for x, y in eye_landmarks])
-        
-        # Calculate bounding box around the eye
-        x_min, y_min = points.min(axis=0)
-        x_max, y_max = points.max(axis=0)
-        
-        # Add padding to the bounding box (10 pixels on each side)
         padding = 10
+        h, w = frame.shape[:2]
         x_min = max(0, x_min - padding)
         y_min = max(0, y_min - padding)
         x_max = min(w, x_max + padding)
         y_max = min(h, y_max + padding)
         
-        # Crop the eye region from the frame
         eye_region = frame[y_min:y_max, x_min:x_max]
         
-        # Handle edge case: empty crop
-        if eye_region.size == 0:
-            eye_region = np.zeros((64, 64, 1), dtype=np.uint8)
-        else:
-            # Convert to grayscale (required by the CNN)
-            eye_region = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
-            
-            # Resize to 64x64 (CNN input size)
-            eye_region = cv2.resize(eye_region, (64, 64))
-            
-            # Add channel dimension for grayscale
-            eye_region = np.expand_dims(eye_region, axis=-1)
+        if eye_region.size == 0 or eye_region.shape[0] < 10 or eye_region.shape[1] < 10:
+            return None
         
-        # Normalize pixel values to [0, 1] range
-        eye_region = eye_region.astype('float32') / 255.0
+        eye_gray = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
+        eye_resized = cv2.resize(eye_gray, (64, 64))
+        eye_normalized = eye_resized.astype('float32') / 255.0
+        eye_final = eye_normalized.reshape(1, 64, 64, 1)
         
-        # Add batch dimension (1, 64, 64, 1)
-        return eye_region.reshape(1, 64, 64, 1)
-
-    def calculate_mar(self, landmarks):
-        """
-        Calculate Mouth Aspect Ratio (MAR) to detect yawning.
+        return eye_final
+    
+    def _annotate_frame(self, frame, left_eye, right_eye,
+                       left_state, right_state, left_conf, right_conf, is_drowsy):
+        """Draw annotations (similar to before)."""
+        annotated = frame.copy()
         
-        Formula: MAR = vertical_distance / horizontal_distance
-        Higher MAR indicates mouth is open (yawning).
+        # Draw eye contours
+        left_color = (0, 0, 255) if left_state == 'Closed' else (0, 255, 0)
+        right_color = (0, 0, 255) if right_state == 'Closed' else (0, 255, 0)
         
-        Args:
-            landmarks: MediaPipe face mesh landmarks
-            
-        Returns:
-            float: Mouth Aspect Ratio value
-        """
-        # Upper lip landmarks (top of mouth)
-        upper_lip = (landmarks.landmark[13].y + landmarks.landmark[14].y) / 2
+        cv2.polylines(annotated, [left_eye], True, left_color, 2)
+        cv2.polylines(annotated, [right_eye], True, right_color, 2)
         
-        # Lower lip landmarks (bottom of mouth)
-        lower_lip = (landmarks.landmark[19].y + landmarks.landmark[20].y) / 2
+        # Draw labels
+        left_center = left_eye.mean(axis=0).astype(int)
+        right_center = right_eye.mean(axis=0).astype(int)
         
-        # Mouth corners (left and right)
-        mouth_width = abs(landmarks.landmark[61].x - landmarks.landmark[291].x)
+        cv2.putText(annotated, f"{left_state} ({left_conf:.2f})",
+                   tuple(left_center - [0, 20]),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, left_color, 2)
         
-        # Calculate vertical distance (mouth opening)
-        vertical_distance = abs(lower_lip - upper_lip)
+        cv2.putText(annotated, f"{right_state} ({right_conf:.2f})",
+                   tuple(right_center - [0, 20]),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, right_color, 2)
         
-        # Avoid division by zero
-        if mouth_width == 0:
-            return 0
+        # Drowsiness warning
+        if is_drowsy:
+            cv2.putText(annotated, "DROWSINESS ALERT!", (50, 50),
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
         
-        # MAR = vertical / horizontal
-        mar = vertical_distance / mouth_width
+        cv2.putText(annotated, f"Closed Frames: {self.CLOSED_FRAMES}/{self.DROWSINESS_THRESHOLD}",
+                   (50, annotated.shape[0] - 30),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         
-        return mar
+        return annotated
+    
+    def _draw_no_face_warning(self, frame):
+        """Draw no face warning."""
+        annotated = frame.copy()
+        h, w = annotated.shape[:2]
+        cv2.putText(annotated, "No Face Detected",
+                   (w // 2 - 150, h // 2),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+        return annotated
+    
+    def reset(self):
+        """Reset counters."""
+        self.CLOSED_FRAMES = 0
