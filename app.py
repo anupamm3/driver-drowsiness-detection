@@ -86,12 +86,21 @@ with st.sidebar:
     )
     
     confidence_threshold = st.slider(
-        "Confidence Threshold", 
+        "Eye Closure Confidence", 
         min_value=0.1, 
         max_value=0.9, 
-        value=0.5,
+        value=0.30,
         step=0.05,
-        help="Minimum confidence to classify eye as closed"
+        help="CNN confidence threshold for closed eye detection (lower = more sensitive)"
+    )
+    
+    ear_threshold = st.slider(
+        "EAR Threshold", 
+        min_value=0.15, 
+        max_value=0.35, 
+        value=0.21,
+        step=0.01,
+        help="Eye Aspect Ratio threshold for geometric detection (lower = more sensitive)"
     )
     
     st.markdown("### Video Settings")
@@ -108,27 +117,16 @@ with st.sidebar:
     st.info("""
     **Drowsiness Detection System**
     
-    Uses CNN to detect closed eyes and alert when driver shows signs of drowsiness.
+    Uses hybrid approach (CNN + EAR) to detect closed eyes and alert when driver shows signs of drowsiness.
     
     **Features:**
-    - Real-time eye state detection
+    - Dual detection (CNN + Geometric)
+    - Temporal smoothing
     - Configurable sensitivity
     - Video file support
+    - Real-time webcam
     - Statistical analysis
     """)
-
-# Initialize detector
-@st.cache_resource
-def load_detector(model_path):
-    """Load the drowsiness detector (cached)."""
-    try:
-        detector = DrowsinessDetector(model_path=model_path)
-        detector.DROWSINESS_THRESHOLD = drowsiness_threshold
-        detector.EYE_CLOSED_THRESHOLD = confidence_threshold
-        return detector
-    except Exception as e:
-        st.error(f"❌ Error loading detector: {e}")
-        return None
 
 # Main content area
 col1, col2 = st.columns([2, 1])
@@ -161,6 +159,12 @@ with col1:
             # Start processing button
             if st.button("🚀 Start Detection", type="primary", use_container_width=True):
                 st.session_state.processing = True
+                # Reset stats
+                st.session_state.stats = {
+                    'total_frames': 0,
+                    'drowsy_frames': 0,
+                    'alert_count': 0
+                }
         else:
             video_path = None
     else:
@@ -168,6 +172,12 @@ with col1:
         if st.button("📷 Start Webcam", type="primary", use_container_width=True):
             st.session_state.processing = True
             video_path = 0  # Webcam
+            # Reset stats
+            st.session_state.stats = {
+                'total_frames': 0,
+                'drowsy_frames': 0,
+                'alert_count': 0
+            }
         else:
             video_path = None
 
@@ -185,17 +195,26 @@ video_placeholder = st.empty()
 progress_placeholder = st.empty()
 
 # Process video
-if st.session_state.processing:
-    # Load detector
-    detector = load_detector(model_path)
+if st.session_state.processing and video_path is not None:
+    # Load or create detector
+    if st.session_state.detector is None:
+        try:
+            with st.spinner("Loading detector..."):
+                st.session_state.detector = DrowsinessDetector(model_path=model_path)
+            st.success("✅ Detector loaded successfully!")
+        except Exception as e:
+            st.error(f"❌ Failed to load detector: {e}")
+            st.stop()
     
-    if detector is None:
-        st.error("❌ Failed to load detector. Please check model path.")
-        st.stop()
+    detector = st.session_state.detector
     
-    # Update detector parameters
+    # Update detector parameters dynamically
     detector.DROWSINESS_THRESHOLD = drowsiness_threshold
     detector.EYE_CLOSED_THRESHOLD = confidence_threshold
+    detector.EAR_THRESHOLD = ear_threshold
+    
+    # Reset detector state
+    detector.reset()
     
     # Open video capture
     try:
@@ -212,9 +231,12 @@ if st.session_state.processing:
         if video_path == 0:  # Webcam
             total_frames = 0  # Unknown for webcam
             st.info("🔴 Live webcam feed - Press 'Stop' to end")
+        else:
+            st.info(f"📹 Processing video: {total_frames} frames @ {fps} FPS")
         
         # Add stop button
-        stop_button = st.button("🛑 Stop Detection", type="secondary")
+        stop_placeholder = st.empty()
+        stop_button = stop_placeholder.button("🛑 Stop Detection", type="secondary", key="stop_btn")
         
         frame_count = 0
         drowsy_count = 0
@@ -266,23 +288,28 @@ if st.session_state.processing:
                     drowsy_percentage = (drowsy_count / frame_count * 100) if frame_count > 0 else 0
                     st.metric("Drowsy %", f"{drowsy_percentage:.1f}%")
             
-            # Status indicator
+            # Status indicator with detailed info
             with status_placeholder.container():
                 if result['drowsy']:
-                    st.markdown("""
+                    st.markdown(f"""
                         <div class="alert-box">
                             <h3>⚠️ DROWSINESS ALERT!</h3>
-                            <p>Driver appears drowsy. Eyes closed for {0} frames.</p>
+                            <p><strong>Eyes closed for {result['score']} frames</strong></p>
+                            <p>Left: {result['left_eye_state']} ({result['left_confidence']:.2f}) | 
+                            Right: {result['right_eye_state']} ({result['right_confidence']:.2f})</p>
                         </div>
-                    """.format(result['score']), unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
+                elif not result['face_detected']:
+                    st.warning("👤 No face detected in frame")
                 else:
-                    st.markdown("""
+                    st.markdown(f"""
                         <div class="safe-box">
                             <h3>✅ Driver Alert</h3>
-                            <p>Left Eye: {0} | Right Eye: {1}</p>
+                            <p>Left: {result['left_eye_state']} ({result['left_confidence']:.2f}) | 
+                            Right: {result['right_eye_state']} ({result['right_confidence']:.2f})</p>
+                            <p>Score: {result['score']}/{drowsiness_threshold}</p>
                         </div>
-                    """.format(result['left_eye_state'], result['right_eye_state']), 
-                    unsafe_allow_html=True)
+                    """, unsafe_allow_html=True)
             
             # Update progress bar (for video files)
             if total_frames > 0:
@@ -292,6 +319,9 @@ if st.session_state.processing:
             # Small delay for webcam
             if video_path == 0:
                 time.sleep(0.03)  # ~30 FPS
+            
+            # Check stop button again
+            stop_button = stop_placeholder.button("🛑 Stop Detection", type="secondary", key=f"stop_btn_{frame_count}")
         
         # Cleanup
         cap.release()
@@ -302,6 +332,9 @@ if st.session_state.processing:
                 os.unlink(video_path)
             except:
                 pass
+        
+        # Clear stop button
+        stop_placeholder.empty()
         
         # Final summary
         st.success("✅ Processing complete!")
@@ -320,17 +353,28 @@ if st.session_state.processing:
         with col4:
             st.metric("Alert Count", st.session_state.stats['alert_count'])
         
+        # Interpretation
+        if percentage > 50:
+            st.error("⚠️ **High drowsiness detected!** The driver showed significant signs of fatigue.")
+        elif percentage > 20:
+            st.warning("⚠️ **Moderate drowsiness detected.** Driver should take a break soon.")
+        else:
+            st.success("✅ **Low drowsiness.** Driver appears alert.")
+        
         st.session_state.processing = False
         
     except Exception as e:
         st.error(f"❌ Error during processing: {e}")
+        import traceback
+        st.code(traceback.format_exc())
         st.session_state.processing = False
 
 # Footer
 st.markdown("---")
 st.markdown("""
     <div style='text-align: center; color: gray;'>
-        <p>Driver Drowsiness Detection System | Built with Streamlit & TensorFlow</p>
-        <p>⚠️ For educational purposes only. Not a substitute for proper rest.</p>
+        <p><strong>Driver Drowsiness Detection System</strong> | Built with Streamlit, TensorFlow & MediaPipe</p>
+        <p>⚠️ For educational and research purposes only. Not a substitute for proper rest and safe driving practices.</p>
+        <p>💡 <em>Tip:</em> Adjust EAR and CNN thresholds in sidebar for optimal performance in different lighting conditions</p>
     </div>
 """, unsafe_allow_html=True)
