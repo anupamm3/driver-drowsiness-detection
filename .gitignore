@@ -1,6 +1,10 @@
 venv/
-mrl_dataset_raw/Close-Eyes
-mrl_dataset_raw/Open-Eyes
-data/
 __pycache__/
 .DS_Store
+
+# data files
+mrl_dataset_raw/
+data/
+
+# video files
+assets/videos/
