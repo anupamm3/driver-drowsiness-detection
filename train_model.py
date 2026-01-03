@@ -6,8 +6,9 @@ import matplotlib.pyplot as plt
 
 # Constants
 TRAIN_DIR = 'data/train'
-MODEL_PATH = 'models/drowsiness_cnn.h5'
-ASSET_PATH = 'assets/training_graph.png'
+VALIDATION_DIR = 'data/validation'
+MODEL_PATH = 'models/drowsiness_cnn_full.h5'
+ASSET_PATH = 'assets/training_graph_full.png'
 EPOCHS = 25
 BATCH_SIZE = 32
 
@@ -28,12 +29,10 @@ def train_model():
         zoom_range=0.1,
         horizontal_flip=True,
         fill_mode='nearest',
-        validation_split=0.2
     )
     
     validation_datagen = ImageDataGenerator(
         rescale=1./255,
-        validation_split=0.2
     )
 
     print("\nLoading training data...")
@@ -43,18 +42,16 @@ def train_model():
         color_mode='grayscale',
         class_mode='categorical',
         batch_size=BATCH_SIZE,
-        subset='training',
         shuffle=True
     )
 
     print("\nLoading validation data...")
     validation_generator = validation_datagen.flow_from_directory(
-        TRAIN_DIR,
+        VALIDATION_DIR,
         target_size=(64, 64),
         color_mode='grayscale',
         class_mode='categorical',
         batch_size=BATCH_SIZE,
-        subset='validation',
         shuffle=False
     )
     
