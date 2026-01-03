@@ -1,8 +1,21 @@
-opencv-python==4.10.0.84
+# OpenCV (headless version for cloud deployment)
+opencv-python-headless==4.10.0.84
+
+# Deep Learning
 tensorflow==2.16.1
+
+# Computer Vision
 mediapipe==0.10.14
+
+# Utilities
 protobuf==4.25.3
 numpy==1.26.4
+
+# Web Framework
 streamlit==1.39.0
+
+# Audio (for alarm - if you use it)
 pygame==2.6.0
+
+# Visualization (if needed)
 matplotlib==3.9.2
