@@ -2,9 +2,12 @@ import cv2
 import numpy as np
 import mediapipe as mp
 from tensorflow.keras.models import load_model
+import os
 
 class DrowsinessDetector:
     def __init__(self, model_path):
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f" Model file not found: {model_path}\n")
         # Load CNN model
         try:
             self.model = load_model(model_path)

@@ -74,7 +74,13 @@ with st.sidebar:
     st.title("⚙️ Settings")
     
     st.markdown("### Model Configuration")
-    model_path = st.text_input("Model Path", value="models/drowsiness_cnn.h5", disabled=True)
+    model_path = "models/drowsiness_cnn_full.h5"
+
+    if not os.path.exists(model_path):
+        st.error(f" Model file not found: {model_path}")
+        st.stop()
+    else:
+        st.success(f" Model loaded: {model_path}")
     
     st.markdown("### Detection Parameters")
     drowsiness_threshold = st.slider(
@@ -199,11 +205,18 @@ if st.session_state.processing and video_path is not None:
     # Load or create detector
     if st.session_state.detector is None:
         try:
-            with st.spinner("Loading detector..."):
+            with st.spinner(" Loading CNN model and MediaPipe..."):
                 st.session_state.detector = DrowsinessDetector(model_path=model_path)
-            st.success("✅ Detector loaded successfully!")
+            st.success(" Detector loaded successfully!")
+        except FileNotFoundError as e:  # ← ADD: Specific error for missing model
+            st.error(f" Model file not found: {model_path}")
+            st.info("Please train the model first: `python train_model.py`")
+            st.stop()
         except Exception as e:
-            st.error(f"❌ Failed to load detector: {e}")
+            st.error(f" Failed to load detector: {e}")
+            with st.expander("🔧 Debug Information"):
+                import traceback
+                st.code(traceback.format_exc())
             st.stop()
     
     detector = st.session_state.detector
