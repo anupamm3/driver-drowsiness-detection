@@ -1,6 +1,8 @@
 venv/
 __pycache__/
 .DS_Store
+.vscode/
+.idea/
 
 # data files
 mrl_dataset_raw/
@@ -8,3 +10,19 @@ data/
 
 # video files
 assets/videos/
+
+# environments
+.env
+.venv
+
+# streamlit secrets
+.streamlit/secrets.toml
+
+# logs & temp
+*.log
+*.tmp
+temp/
+tmp/
+
+# python
+build/
